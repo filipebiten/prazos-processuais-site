@@ -1,3 +1,5 @@
+import { isDiaUtil, addDays } from './lib/prazosEngine.mjs';
+
 const LS_KEYS = {
   owner: 'pp_owner',
   repo: 'pp_repo',
@@ -12,8 +14,16 @@ let estado = {
   prazos: [],
   publicacoes: [],
   processos: [],
+  status: null,
+  feriadosNacionais: new Set(),
+  feriadosForenses: new Set(),
   teorExpandido: new Set(),
+  trilhaExpandida: new Set(),
 };
+
+// Limite de "sem atualização há tempo demais" — o cron roda 1x/dia; 36h dá folga
+// pra fusos/atraso sem disparar alarme falso, mas ainda pega uma falha real rápido.
+const LIMITE_HORAS_SEM_ATUALIZACAO = 36;
 
 function getConfig() {
   return {
@@ -128,6 +138,106 @@ function formatarData(dataStr) {
   return `${d}/${m}/${y}`;
 }
 
+function hojeStr() {
+  const hoje = new Date();
+  return `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+}
+
+// Conta dias úteis de hoje até a data de vencimento (inclusive), usando o mesmo motor
+// puro do backend (scripts/lib/prazosEngine.mjs, copiado para lib/) — nunca reimplementa
+// a regra de dia útil no frontend, pra não haver risco de divergência entre os dois lados.
+function diasUteisRestantes(dataVencimento) {
+  if (!dataVencimento) return null;
+  const opts = { feriadosNacionais: estado.feriadosNacionais, feriadosForenses: estado.feriadosForenses };
+  let atual = hojeStr();
+  if (atual > dataVencimento) return null; // já vencido
+  let contados = 0;
+  while (atual <= dataVencimento) {
+    if (isDiaUtil(atual, opts)) contados += 1;
+    atual = addDays(atual, 1);
+  }
+  return contados;
+}
+
+// --- Trilha auditável (dia a dia do cálculo, resumida em faixas para leitura) ---
+
+const MOTIVO_LABEL = {
+  fim_de_semana: 'fim de semana',
+  feriado_nacional: 'feriado nacional',
+  feriado_forense: 'feriado forense/local',
+  recesso: 'recesso forense',
+  nao_util: 'dia não útil',
+};
+
+const MARCO_LABEL = {
+  disponibilizacao: 'Disponibilização',
+  intimacao_considerada: 'Intimação considerada',
+  inicio_contagem: 'Início da contagem',
+  vencimento: 'Vencimento',
+};
+
+// Agrupa dias consecutivos com o mesmo status (contado ou pulado pelo mesmo motivo) em
+// faixas, pra não renderizar uma linha por dia (um recesso de 33 dias viraria 33 linhas).
+// Dias com marco (disponibilização/intimação/início/vencimento) nunca se agrupam — ficam
+// sempre em linha própria, são os pontos de referência que o advogado precisa achar rápido.
+function resumirTrilha(trilha) {
+  const grupos = [];
+  for (const dia of trilha) {
+    const temMarco = dia.marcos.length > 0;
+    const chave = dia.contado ? 'contado' : (dia.motivoPulo || 'sem_motivo');
+    const anterior = grupos[grupos.length - 1];
+
+    if (!temMarco && anterior && !anterior.temMarco && anterior.chave === chave) {
+      anterior.fim = dia.data;
+      anterior.qtd += 1;
+      if (dia.numeroContagem) anterior.numeroFim = dia.numeroContagem;
+    } else {
+      grupos.push({
+        chave,
+        marcos: dia.marcos,
+        temMarco,
+        inicio: dia.data,
+        fim: dia.data,
+        qtd: 1,
+        numeroInicio: dia.numeroContagem,
+        numeroFim: dia.numeroContagem,
+      });
+    }
+  }
+  return grupos;
+}
+
+function descreverGrupo(grupo) {
+  if (grupo.temMarco) {
+    const marcos = grupo.marcos.map((m) => MARCO_LABEL[m] || m).join(' + ');
+    if (grupo.chave === 'contado') {
+      return `${marcos} — dia ${grupo.numeroInicio} da contagem`;
+    }
+    return grupo.chave === 'sem_motivo' ? marcos : `${marcos} (${MOTIVO_LABEL[grupo.chave] || grupo.chave})`;
+  }
+  if (grupo.chave === 'contado') {
+    return grupo.qtd === 1
+      ? `dia ${grupo.numeroInicio} da contagem`
+      : `dias ${grupo.numeroInicio}–${grupo.numeroFim} da contagem`;
+  }
+  return `${MOTIVO_LABEL[grupo.chave] || grupo.chave} — não contado`;
+}
+
+function renderTrilha(trilha) {
+  const grupos = resumirTrilha(trilha);
+  const linhas = grupos.map((g) => {
+    const intervalo = g.inicio === g.fim ? formatarData(g.inicio) : `${formatarData(g.inicio)}–${formatarData(g.fim)}`;
+    const classe = g.temMarco ? 'marco' : (g.chave === 'contado' ? 'contado' : 'pulado');
+    return `
+      <div class="trilha-linha ${classe}">
+        <span class="trilha-data">${intervalo}</span>
+        <span class="trilha-desc">${escapeHtml(descreverGrupo(g))}</span>
+      </div>
+    `;
+  }).join('');
+  return `<div class="trilha">${linhas}</div>`;
+}
+
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -195,6 +305,57 @@ function popularFiltroTribunal() {
   select.value = atual;
 }
 
+function renderBannerFrescor() {
+  const el = document.getElementById('banner-frescor');
+  const status = estado.status;
+
+  if (!status || !status.ultima_execucao) {
+    el.hidden = false;
+    el.className = 'banner-alerta critico';
+    el.innerHTML = '⚠ Não foi possível determinar quando os dados foram atualizados pela última vez (data/status_execucao.json ausente ou ilegível).';
+    return;
+  }
+
+  const horasDesde = (Date.now() - new Date(status.ultima_execucao).getTime()) / 3_600_000;
+  const horasArredondado = Math.round(horasDesde);
+
+  if (status.sucesso === false) {
+    el.hidden = false;
+    el.className = 'banner-alerta critico';
+    el.innerHTML = `⚠ A última atualização automática FALHOU há ${horasArredondado}h (${escapeHtml(status.erro || 'ver logs do GitHub Actions')}). Os dados podem estar desatualizados.`;
+    return;
+  }
+
+  if (horasDesde > LIMITE_HORAS_SEM_ATUALIZACAO) {
+    el.hidden = false;
+    el.className = 'banner-alerta critico';
+    el.innerHTML = `⚠ Sem atualização confirmada há ${horasArredondado}h — pode haver publicações ainda não capturadas.`;
+    return;
+  }
+
+  el.hidden = false;
+  el.className = 'banner-alerta ok';
+  el.innerHTML = `✓ Dados atualizados há ${horasArredondado}h`;
+}
+
+function renderSecaoRevisao() {
+  const el = document.getElementById('secao-revisao');
+  const pendentesDeRevisao = estado.prazos.filter((p) => p.status === 'pendente' && p.revisado_por_humano !== true);
+
+  if (pendentesDeRevisao.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const ordenados = [...pendentesDeRevisao].sort((a, b) => (a.data_vencimento || '9999').localeCompare(b.data_vencimento || '9999'));
+  el.innerHTML = `
+    <div class="secao-revisao">
+      <div class="secao-revisao-titulo">⚠ Precisam da sua confirmação (${ordenados.length})</div>
+      <div class="cards-grid">${ordenados.map(renderCard).join('')}</div>
+    </div>
+  `;
+}
+
 function renderStats() {
   const pendentes = estado.prazos.filter((p) => p.status === 'pendente' && p.data_vencimento);
   const vencendoEmBreve = pendentes.filter((p) => {
@@ -242,6 +403,8 @@ function renderCard(prazo) {
   const expandido = estado.teorExpandido.has(prazo.id);
   const teor = pub.teor_resumido || '';
   const teorCurto = teor.length > 220 && !expandido ? teor.slice(0, 220) + '…' : teor;
+  const diasUteis = prazo.status === 'pendente' ? diasUteisRestantes(prazo.data_vencimento) : null;
+  const trilhaAberta = estado.trilhaExpandida.has(prazo.id);
 
   const partesHtml = (proc.partes || []).slice(0, 6).map((p) => `
     <li><span class="parte-papel">${escapeHtml(p.papel)}:</span> ${escapeHtml(p.nome)}</li>
@@ -251,10 +414,14 @@ function renderCard(prazo) {
     <article class="card" data-id="${prazo.id}">
       <div class="card-topo">
         <span class="badge ${badge.classe}">${badge.texto}</span>
-        <span class="card-vencimento">${formatarData(prazo.data_vencimento)}</span>
+        <span class="card-vencimento">
+          ${formatarData(prazo.data_vencimento)}
+          ${diasUteis !== null ? `<span class="dias-uteis-restantes">· ${diasUteis} dia(s) útil(eis)</span>` : ''}
+        </span>
       </div>
 
       <h3 class="card-titulo">${escapeHtml(prazo.tipo_prazo || 'Prazo')}</h3>
+      ${prazo.revisado_por_humano !== true ? '<span class="selo-nao-revisado">⚠ sugerido, aguardando revisão</span>' : ''}
       <div class="card-processo">
         ${escapeHtml(proc.numero_processo || pub.numero_processo || '—')}
         <span class="card-tribunal">${escapeHtml(proc.tribunal || pub.tribunal || '')}${proc.orgao ? ' · ' + escapeHtml(proc.orgao) : ''}</span>
@@ -273,6 +440,11 @@ function renderCard(prazo) {
       ` : ''}
 
       ${prazo.observacao ? `<p class="card-observacao">⚠ ${escapeHtml(prazo.observacao)}</p>` : ''}
+
+      ${prazo.trilha_calculo ? `
+        <button class="link-ver-calculo" data-id="${prazo.id}">${trilhaAberta ? '▾ ocultar como foi calculado' : '▸ conferir como esse prazo foi calculado'}</button>
+        ${trilhaAberta ? renderTrilha(prazo.trilha_calculo) : ''}
+      ` : ''}
 
       <div class="card-rodape">
         <span class="card-responsavel">${escapeHtml(prazo.responsavel || '—')}</span>
@@ -297,31 +469,46 @@ function renderLista() {
   }
 
   container.innerHTML = `<div class="cards-grid">${lista.map(renderCard).join('')}</div>`;
-
-  container.querySelectorAll('.btn-marcar-cumprido').forEach((btn) => {
-    btn.addEventListener('click', () => onMarcarCumprido(btn.dataset.id, btn));
-  });
-  container.querySelectorAll('.btn-whatsapp').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const prazo = estado.prazos.find((p) => p.id === btn.dataset.id);
-      if (prazo) abrirWhatsapp(prazo);
-    });
-  });
-  container.querySelectorAll('.link-ver-mais').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.id;
-      if (estado.teorExpandido.has(id)) estado.teorExpandido.delete(id);
-      else estado.teorExpandido.add(id);
-      renderLista();
-    });
-  });
 }
 
 function renderTudo() {
+  renderBannerFrescor();
   popularFiltroTribunal();
   renderStats();
+  renderSecaoRevisao();
   renderLista();
 }
+
+// Delegação de eventos num único listener por tipo de ação: os cards são renderizados
+// em dois containers (lista principal e seção "precisa confirmação"), então cabear
+// botão por botão a cada render duplicaria a lógica — um listener em document cobre os dois.
+document.addEventListener('click', (event) => {
+  const btnCumprido = event.target.closest('.btn-marcar-cumprido');
+  if (btnCumprido) return onMarcarCumprido(btnCumprido.dataset.id, btnCumprido);
+
+  const btnWhatsapp = event.target.closest('.btn-whatsapp');
+  if (btnWhatsapp) {
+    const prazo = estado.prazos.find((p) => p.id === btnWhatsapp.dataset.id);
+    if (prazo) abrirWhatsapp(prazo);
+    return;
+  }
+
+  const btnVerMais = event.target.closest('.link-ver-mais');
+  if (btnVerMais) {
+    const id = btnVerMais.dataset.id;
+    if (estado.teorExpandido.has(id)) estado.teorExpandido.delete(id);
+    else estado.teorExpandido.add(id);
+    return renderTudo();
+  }
+
+  const btnVerCalculo = event.target.closest('.link-ver-calculo');
+  if (btnVerCalculo) {
+    const id = btnVerCalculo.dataset.id;
+    if (estado.trilhaExpandida.has(id)) estado.trilhaExpandida.delete(id);
+    else estado.trilhaExpandida.add(id);
+    return renderTudo();
+  }
+});
 
 // --- Ações ---
 
@@ -360,6 +547,27 @@ async function carregarDados() {
     estado.prazos = prazos;
     estado.publicacoes = publicacoes;
     estado.processos = processos;
+
+    // Status de execução e feriados são só para os indicadores de confiabilidade
+    // (frescor + dias úteis restantes) — se algum desses 3 falhar, o dashboard ainda
+    // funciona com os dados essenciais acima, só perde esses indicadores extras.
+    try {
+      estado.status = await fetchJsonDoRepo('data/status_execucao.json');
+    } catch {
+      estado.status = null;
+    }
+    try {
+      const [feriadosNacionaisRaw, feriadosForensesRaw] = await Promise.all([
+        fetchJsonDoRepo('data/feriados_nacionais_cache.json'),
+        fetchJsonDoRepo('data/feriados_forenses.json'),
+      ]);
+      estado.feriadosNacionais = new Set(Object.values(feriadosNacionaisRaw).flat());
+      estado.feriadosForenses = new Set((feriadosForensesRaw.feriados || []).map((f) => f.data));
+    } catch {
+      estado.feriadosNacionais = new Set();
+      estado.feriadosForenses = new Set();
+    }
+
     const { owner, repo, branch } = getConfig();
     document.getElementById('fonte-info').textContent = `${owner}/${repo}@${branch} — atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
     renderTudo();

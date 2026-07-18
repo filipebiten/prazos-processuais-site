@@ -228,6 +228,83 @@
   .badge-critical { color: var(--status-critical);  border-color: var(--status-critical); }
   .badge-neutro   { color: var(--text-secondary);   border-color: var(--baseline); }
 
+  .banner-alerta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .banner-alerta.critico {
+    background: color-mix(in srgb, var(--status-critical) 14%, var(--surface-1));
+    border: 1px solid var(--status-critical);
+    color: var(--status-critical);
+  }
+  .banner-alerta.ok {
+    background: transparent;
+    border: 1px solid var(--gridline);
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .secao-revisao {
+    border: 1px solid var(--status-warning);
+    background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-1));
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .secao-revisao-titulo {
+    font-weight: 700;
+    font-size: 0.88rem;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .secao-revisao .cards-grid { gap: 10px; }
+
+  .selo-nao-revisado {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #8a5a00;
+    background: color-mix(in srgb, var(--status-warning) 22%, transparent);
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+
+  .dias-uteis-restantes {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .link-ver-calculo {
+    background: none; border: none; padding: 4px 0; min-height: auto;
+    color: var(--series-blue); font-size: 0.78rem; cursor: pointer; text-decoration: underline;
+    text-align: left;
+  }
+  .trilha {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.78rem;
+    background: var(--page-plane);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .trilha-linha { display: flex; gap: 8px; align-items: baseline; }
+  .trilha-linha .trilha-data { font-variant-numeric: tabular-nums; color: var(--text-muted); flex: 0 0 auto; min-width: 92px; }
+  .trilha-linha.marco .trilha-data { color: var(--text-primary); font-weight: 700; }
+  .trilha-linha.contado .trilha-desc { color: var(--status-good); }
+  .trilha-linha.pulado .trilha-desc { color: var(--text-muted); }
+
   .overlay {
     position: fixed; inset: 0;
     background: rgba(0,0,0,0.45);
@@ -313,8 +390,11 @@
   </header>
 
   <div id="erro" class="mensagem-erro" hidden></div>
+  <div id="banner-frescor" hidden></div>
 
   <section class="stats" id="stats"></section>
+
+  <section id="secao-revisao"></section>
 
   <div class="filtros">
     <select id="filtro-status">
@@ -370,6 +450,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
