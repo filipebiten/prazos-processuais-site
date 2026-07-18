@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Prazos Processuais</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#2a78d6" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
 <style>
   :root {
     color-scheme: light;
@@ -139,6 +142,122 @@
     min-height: 38px;
   }
   .filtros input[type="text"] { min-width: 160px; }
+  .filtros select#agrupar-por { min-width: 170px; }
+
+  .barra-ferramentas {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .toggle-visualizacao, .ferramentas-direita { display: flex; gap: 6px; flex-wrap: wrap; }
+  .toggle-visualizacao button.view-ativa { background: var(--series-blue); color: #fff; border-color: transparent; }
+  .tecla-atalho { color: var(--text-muted); font-size: 0.72rem; margin-left: 2px; }
+
+  .grupo-titulo {
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 18px 0 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .grupo-titulo:first-child { margin-top: 0; }
+  .grupo-contagem {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: var(--gridline);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+
+  .card-destacado { outline: 2px solid var(--series-blue); outline-offset: 2px; }
+
+  /* --- Calendário --- */
+  .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .cal-titulo { font-weight: 700; text-transform: capitalize; }
+  .cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+  .cal-cabecalho { text-align: center; font-size: 0.7rem; color: var(--text-muted); font-weight: 600; padding-bottom: 4px; }
+  .cal-dia {
+    min-height: 64px;
+    border: 1px solid var(--gridline);
+    border-radius: 8px;
+    padding: 4px;
+    font-size: 0.68rem;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--surface-1);
+  }
+  @media (min-width: 600px) { .cal-dia { min-height: 88px; padding: 6px; font-size: 0.72rem; } }
+  .cal-dia.cal-vazio { border: none; background: transparent; cursor: default; }
+  .cal-dia.cal-hoje { border-color: var(--series-blue); border-width: 2px; }
+  .cal-dia.cal-selecionado { background: color-mix(in srgb, var(--series-blue) 12%, var(--surface-1)); }
+  .cal-numero { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cal-chip {
+    border-radius: 4px;
+    padding: 1px 4px;
+    font-size: 0.62rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #fff;
+  }
+  /* color repetido aqui de propósito: .badge-critical etc. (usadas nos badges de texto
+     dos cards) têm a mesma especificidade de .cal-chip sozinho e vêm depois no arquivo,
+     então ganhariam do branco sem essa combinação de classes ser mais específica. */
+  .cal-chip.badge-critical { background: var(--status-critical); color: #fff; }
+  .cal-chip.badge-warning { background: var(--status-warning); color: #4a3200; }
+  .cal-chip.badge-good { background: var(--status-good); color: #fff; }
+  .cal-chip.badge-neutro { background: var(--baseline); color: #fff; }
+  .cal-mais { font-size: 0.62rem; color: var(--text-muted); }
+  .cal-detalhe { margin-top: 18px; }
+
+  /* --- Busca rápida --- */
+  .palette-painel { max-width: 520px; padding: 12px; }
+  .palette-painel input {
+    width: 100%;
+    font-family: inherit;
+    font-size: 16px;
+    padding: 10px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--page-plane);
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+  .palette-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    padding: 9px 10px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+  }
+  .palette-item:hover { background: var(--page-plane); }
+  .palette-item span { color: var(--text-secondary); font-size: 0.78rem; }
+
+  .somente-impressao { display: none; }
+  @media print {
+    body > *:not(.somente-impressao) { display: none !important; }
+    .somente-impressao { display: block !important; }
+    .somente-impressao table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .somente-impressao th, .somente-impressao td { border: 1px solid #999; padding: 6px 8px; text-align: left; }
+    .somente-impressao tr.linha-vencida { background: #fee; }
+  }
 
   .cards-grid {
     display: grid;
@@ -403,12 +522,39 @@
     </select>
     <input type="text" id="filtro-responsavel" placeholder="Filtrar por responsável" />
     <input type="text" id="filtro-busca" placeholder="Buscar por nº do processo" />
+    <select id="agrupar-por">
+      <option value="nenhum">Sem agrupamento</option>
+      <option value="responsavel">Agrupar por responsável</option>
+      <option value="dia">Agrupar por dia</option>
+      <option value="urgencia">Agrupar por urgência</option>
+    </select>
+  </div>
+
+  <div class="barra-ferramentas">
+    <div class="toggle-visualizacao">
+      <button id="btn-view-cards" class="view-ativa">🗂 Cards</button>
+      <button id="btn-view-calendario">📅 Calendário</button>
+    </div>
+    <div class="ferramentas-direita">
+      <button id="btn-busca-rapida" title="Busca rápida (Cmd+K / Ctrl+K)">🔎 Buscar <span class="tecla-atalho">⌘K</span></button>
+      <button id="btn-exportar-ics">📅 Exportar .ics</button>
+      <button id="btn-imprimir-semana">🖨 Imprimir semana</button>
+    </div>
   </div>
 
   <div id="lista-container">
     <div class="estado-vazio">Configure o acesso ao repositório de dados para começar.</div>
   </div>
 </main>
+
+<div id="relatorio-impressao" class="somente-impressao"></div>
+
+<div class="overlay" id="overlay-palette" hidden>
+  <div class="painel palette-painel">
+    <input type="text" id="palette-input" placeholder="Buscar por processo, parte ou responsável..." />
+    <div id="palette-resultados"></div>
+  </div>
+</div>
 
 <div class="overlay" id="overlay-config" hidden>
   <div class="painel">

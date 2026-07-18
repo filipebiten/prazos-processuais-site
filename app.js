@@ -19,6 +19,9 @@ let estado = {
   feriadosForenses: new Set(),
   teorExpandido: new Set(),
   trilhaExpandida: new Set(),
+  visualizacao: 'cards', // 'cards' | 'calendario'
+  mesCalendario: (() => { const h = new Date(); return { ano: h.getFullYear(), mes: h.getMonth() }; })(),
+  diaCalendarioSelecionado: null,
 };
 
 // Limite de "sem atualização há tempo demais" — o cron roda 1x/dia; 36h dá folga
@@ -297,6 +300,74 @@ function abrirWhatsapp(prazo) {
   window.open(url, '_blank', 'noopener');
 }
 
+// --- Exportar .ics ---
+
+function escaparIcs(texto) {
+  return String(texto ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+}
+
+function timestampIcsAgora() {
+  return new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+}
+
+function gerarEventoIcs(prazo) {
+  const proc = processoDoPrazo(prazo);
+  const pub = publicacaoDoPrazo(prazo);
+  const resumoLinha = `Prazo: ${prazo.tipo_prazo || 'Prazo'} — ${proc.numero_processo || pub.numero_processo || 'processo não identificado'}`;
+  const descricao = [
+    proc.resumo,
+    prazo.responsavel ? `Responsável: ${prazo.responsavel}` : '',
+    prazo.observacao ? `Atenção: ${prazo.observacao}` : '',
+  ].filter(Boolean).join('\n');
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:${prazo.id}@prazos-processuais`,
+    `DTSTAMP:${timestampIcsAgora()}`,
+    `DTSTART;VALUE=DATE:${prazo.data_vencimento.replaceAll('-', '')}`,
+    `DTEND;VALUE=DATE:${addDays(prazo.data_vencimento, 1).replaceAll('-', '')}`,
+    `SUMMARY:${escaparIcs(resumoLinha)}`,
+    `DESCRIPTION:${escaparIcs(descricao)}`,
+    'END:VEVENT',
+  ].join('\r\n');
+}
+
+function gerarIcs(prazos) {
+  const eventos = prazos.filter((p) => p.data_vencimento).map(gerarEventoIcs);
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Prazos Processuais//PT-BR',
+    'CALSCALE:GREGORIAN',
+    ...eventos,
+    'END:VCALENDAR',
+  ].join('\r\n');
+}
+
+function baixarArquivo(nomeArquivo, conteudo, tipo) {
+  const blob = new Blob([conteudo], { type: tipo });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nomeArquivo;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportarIcsUnico(prazoId) {
+  const prazo = estado.prazos.find((p) => p.id === prazoId);
+  if (!prazo || !prazo.data_vencimento) return;
+  baixarArquivo(`prazo-${prazo.tipo_prazo || 'sem-tipo'}.ics`, gerarIcs([prazo]), 'text/calendar');
+}
+
+function exportarIcsFiltrados() {
+  const lista = prazosFiltrados().filter((p) => p.data_vencimento);
+  if (lista.length === 0) { mostrarToast('Nenhum prazo com vencimento calculado nos filtros atuais.'); return; }
+  baixarArquivo('prazos-processuais.ics', gerarIcs(lista), 'text/calendar');
+}
+
 // --- Render ---
 
 function popularFiltroTribunal() {
@@ -452,6 +523,7 @@ function renderCard(prazo) {
       <div class="card-rodape">
         <span class="card-responsavel">${escapeHtml(prazo.responsavel || '—')}</span>
         <div class="card-acoes">
+          ${prazo.data_vencimento ? `<button class="btn-ics" data-id="${prazo.id}" title="Exportar para calendário (.ics)">📅 .ics</button>` : ''}
           <button class="btn-whatsapp" data-id="${prazo.id}" title="Enviar resumo pelo WhatsApp">📱 WhatsApp</button>
           ${podeMarcarCumprido
             ? `<button class="btn-marcar-cumprido primary" data-id="${prazo.id}">Marcar cumprido</button>`
@@ -462,16 +534,59 @@ function renderCard(prazo) {
   `;
 }
 
+const URGENCIA_ORDEM = ['badge-critical', 'badge-warning', 'badge-good', 'badge-neutro'];
+const URGENCIA_ROTULO = {
+  'badge-critical': 'Crítico (vencido ou ≤2 dias úteis)',
+  'badge-warning': 'Atenção (≤5 dias úteis)',
+  'badge-good': 'Tranquilo',
+  'badge-neutro': 'Outros status',
+};
+
+// Agrupa a lista já filtrada/ordenada por responsável, dia de vencimento ou faixa de
+// urgência — puramente de exibição, não reordena os critérios de filtro/prazo em si.
+function agruparPrazos(lista, criterio) {
+  if (!criterio || criterio === 'nenhum') return [{ titulo: null, itens: lista }];
+
+  const grupos = new Map();
+  for (const p of lista) {
+    let chave;
+    if (criterio === 'responsavel') chave = p.responsavel || 'Sem responsável';
+    else if (criterio === 'dia') chave = p.data_vencimento || '9999-99-99';
+    else chave = badgeUrgencia(p).classe;
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(p);
+  }
+
+  let chaves = [...grupos.keys()];
+  if (criterio === 'responsavel') chaves.sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  if (criterio === 'dia') chaves.sort();
+  if (criterio === 'urgencia') chaves.sort((a, b) => URGENCIA_ORDEM.indexOf(a) - URGENCIA_ORDEM.indexOf(b));
+
+  return chaves.map((chave) => {
+    let titulo = chave;
+    if (criterio === 'dia') titulo = chave === '9999-99-99' ? 'Sem data calculada' : formatarData(chave);
+    if (criterio === 'urgencia') titulo = URGENCIA_ROTULO[chave] || chave;
+    return { titulo, itens: grupos.get(chave) };
+  });
+}
+
 function renderLista() {
   const lista = prazosFiltrados();
   const container = document.getElementById('lista-container');
+
+  if (estado.visualizacao === 'calendario') return renderCalendario();
 
   if (lista.length === 0) {
     container.innerHTML = '<div class="estado-vazio">Nenhum prazo encontrado com os filtros atuais.</div>';
     return;
   }
 
-  container.innerHTML = `<div class="cards-grid">${lista.map(renderCard).join('')}</div>`;
+  const criterio = document.getElementById('agrupar-por')?.value || 'nenhum';
+  const grupos = agruparPrazos(lista, criterio);
+  container.innerHTML = grupos.map((g) => `
+    ${g.titulo ? `<div class="grupo-titulo">${escapeHtml(g.titulo)} <span class="grupo-contagem">${g.itens.length}</span></div>` : ''}
+    <div class="cards-grid">${g.itens.map(renderCard).join('')}</div>
+  `).join('');
 }
 
 function renderTudo() {
@@ -480,6 +595,174 @@ function renderTudo() {
   renderStats();
   renderSecaoRevisao();
   renderLista();
+}
+
+// --- Visão de calendário ---
+
+const NOMES_DIA_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+function mudarMes(delta) {
+  let { ano, mes } = estado.mesCalendario;
+  mes += delta;
+  if (mes < 0) { mes = 11; ano -= 1; }
+  if (mes > 11) { mes = 0; ano += 1; }
+  estado.mesCalendario = { ano, mes };
+  estado.diaCalendarioSelecionado = null;
+  renderLista();
+}
+
+function renderCalendario() {
+  const container = document.getElementById('lista-container');
+  const { ano, mes } = estado.mesCalendario;
+
+  const primeiroDiaMes = new Date(Date.UTC(ano, mes, 1));
+  const diaSemanaInicio = primeiroDiaMes.getUTCDay();
+  const totalDias = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate();
+
+  const prazosPorDia = new Map();
+  for (const p of prazosFiltrados()) {
+    if (!p.data_vencimento) continue;
+    if (!prazosPorDia.has(p.data_vencimento)) prazosPorDia.set(p.data_vencimento, []);
+    prazosPorDia.get(p.data_vencimento).push(p);
+  }
+
+  const celulas = [];
+  for (let i = 0; i < diaSemanaInicio; i++) celulas.push('<div class="cal-dia cal-vazio"></div>');
+  for (let dia = 1; dia <= totalDias; dia++) {
+    const dataStr = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+    const prazosDoDia = prazosPorDia.get(dataStr) || [];
+    const chips = prazosDoDia.slice(0, 3).map((p) => `<div class="cal-chip ${badgeUrgencia(p).classe}">${escapeHtml((p.tipo_prazo || 'Prazo').slice(0, 16))}</div>`).join('');
+    const extra = prazosDoDia.length > 3 ? `<div class="cal-mais">+${prazosDoDia.length - 3}</div>` : '';
+    const classes = ['cal-dia'];
+    if (dataStr === hojeStr()) classes.push('cal-hoje');
+    if (prazosDoDia.length) classes.push('cal-tem-prazo');
+    if (dataStr === estado.diaCalendarioSelecionado) classes.push('cal-selecionado');
+    celulas.push(`
+      <div class="${classes.join(' ')}" data-data="${dataStr}">
+        <div class="cal-numero">${dia}</div>
+        ${chips}${extra}
+      </div>
+    `);
+  }
+
+  const nomeMes = primeiroDiaMes.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const prazosDoDiaSelecionado = estado.diaCalendarioSelecionado ? (prazosPorDia.get(estado.diaCalendarioSelecionado) || []) : [];
+
+  container.innerHTML = `
+    <div class="cal-header">
+      <button id="cal-anterior" class="icon-btn">‹</button>
+      <div class="cal-titulo">${escapeHtml(nomeMes)}</div>
+      <button id="cal-seguinte" class="icon-btn">›</button>
+    </div>
+    <div class="cal-grid">
+      ${NOMES_DIA_SEMANA.map((n) => `<div class="cal-cabecalho">${n}</div>`).join('')}
+      ${celulas.join('')}
+    </div>
+    ${estado.diaCalendarioSelecionado ? `
+      <div class="cal-detalhe">
+        <div class="grupo-titulo">${formatarData(estado.diaCalendarioSelecionado)} <span class="grupo-contagem">${prazosDoDiaSelecionado.length}</span></div>
+        ${prazosDoDiaSelecionado.length
+          ? `<div class="cards-grid">${prazosDoDiaSelecionado.map(renderCard).join('')}</div>`
+          : '<div class="estado-vazio">Nenhum prazo filtrado vence nesse dia.</div>'}
+      </div>
+    ` : ''}
+  `;
+}
+
+// --- Relatório imprimível da semana ---
+
+function prazosDaSemana() {
+  const hoje = hojeStr();
+  const limite = addDays(hoje, 7);
+  return estado.prazos
+    .filter((p) => p.status === 'pendente' && p.data_vencimento && p.data_vencimento <= limite)
+    .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento));
+}
+
+function imprimirSemana() {
+  const lista = prazosDaSemana();
+  const linhas = lista.map((p) => {
+    const proc = processoDoPrazo(p);
+    const pub = publicacaoDoPrazo(p);
+    const vencido = diasAteHoje(p.data_vencimento) < 0;
+    return `
+      <tr class="${vencido ? 'linha-vencida' : ''}">
+        <td>${formatarData(p.data_vencimento)}</td>
+        <td>${escapeHtml(p.tipo_prazo || '—')}</td>
+        <td>${escapeHtml(proc.numero_processo || pub.numero_processo || '—')}</td>
+        <td>${escapeHtml(proc.tribunal || pub.tribunal || '—')}</td>
+        <td>${escapeHtml(p.responsavel || '—')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  document.getElementById('relatorio-impressao').innerHTML = `
+    <h1>Relatório de prazos — próximos 7 dias</h1>
+    <p>Gerado em ${new Date().toLocaleString('pt-BR')} · ${lista.length} prazo(s)</p>
+    <table>
+      <thead><tr><th>Vencimento</th><th>Tipo</th><th>Processo</th><th>Tribunal</th><th>Responsável</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="5">Nenhum prazo pendente nos próximos 7 dias.</td></tr>'}</tbody>
+    </table>
+  `;
+  window.print();
+}
+
+// --- Busca rápida (Cmd+K) ---
+
+function abrirPalette() {
+  document.getElementById('overlay-palette').hidden = false;
+  const input = document.getElementById('palette-input');
+  input.value = '';
+  input.focus();
+  renderPaletteResultados('');
+}
+
+function fecharPalette() {
+  document.getElementById('overlay-palette').hidden = true;
+}
+
+function renderPaletteResultados(termo) {
+  const t = termo.trim().toLowerCase();
+  const el = document.getElementById('palette-resultados');
+
+  if (!t) { el.innerHTML = '<div class="estado-vazio">Digite pra buscar por processo, parte ou responsável.</div>'; return; }
+
+  const resultados = estado.prazos.filter((p) => {
+    const proc = processoDoPrazo(p);
+    const pub = publicacaoDoPrazo(p);
+    const alvo = [
+      proc.numero_processo, pub.numero_processo, p.responsavel, p.tipo_prazo, proc.resumo,
+      ...(proc.partes || []).map((x) => x.nome),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return alvo.includes(t);
+  }).slice(0, 15);
+
+  if (resultados.length === 0) { el.innerHTML = '<div class="estado-vazio">Nada encontrado.</div>'; return; }
+
+  el.innerHTML = resultados.map((p) => {
+    const proc = processoDoPrazo(p);
+    const pub = publicacaoDoPrazo(p);
+    return `
+      <button class="palette-item" data-id="${p.id}">
+        <strong>${escapeHtml(proc.numero_processo || pub.numero_processo || '—')}</strong>
+        <span>${escapeHtml(p.tipo_prazo || '')} · ${escapeHtml(p.responsavel || 'sem responsável')}</span>
+      </button>
+    `;
+  }).join('');
+}
+
+function irParaPrazo(id) {
+  fecharPalette();
+  estado.visualizacao = 'cards';
+  document.getElementById('filtro-status').value = 'todos';
+  renderTudo();
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.card[data-id="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('card-destacado');
+    setTimeout(() => el.classList.remove('card-destacado'), 2000);
+  });
 }
 
 // Delegação de eventos num único listener por tipo de ação: os cards são renderizados
@@ -510,6 +793,38 @@ document.addEventListener('click', (event) => {
     if (estado.trilhaExpandida.has(id)) estado.trilhaExpandida.delete(id);
     else estado.trilhaExpandida.add(id);
     return renderTudo();
+  }
+
+  const btnIcs = event.target.closest('.btn-ics');
+  if (btnIcs) return exportarIcsUnico(btnIcs.dataset.id);
+
+  const calAnterior = event.target.closest('#cal-anterior');
+  if (calAnterior) return mudarMes(-1);
+
+  const calSeguinte = event.target.closest('#cal-seguinte');
+  if (calSeguinte) return mudarMes(1);
+
+  const calDia = event.target.closest('.cal-dia[data-data]');
+  if (calDia) {
+    const data = calDia.dataset.data;
+    estado.diaCalendarioSelecionado = estado.diaCalendarioSelecionado === data ? null : data;
+    return renderLista();
+  }
+
+  const paletteItem = event.target.closest('.palette-item');
+  if (paletteItem) return irParaPrazo(paletteItem.dataset.id);
+
+  if (event.target.id === 'overlay-palette') return fecharPalette();
+});
+
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    abrirPalette();
+    return;
+  }
+  if (event.key === 'Escape' && !document.getElementById('overlay-palette').hidden) {
+    fecharPalette();
   }
 });
 
@@ -626,9 +941,28 @@ document.getElementById('btn-config').addEventListener('click', abrirConfig);
 document.getElementById('btn-cancelar-config').addEventListener('click', fecharConfig);
 document.getElementById('btn-salvar-config').addEventListener('click', salvarConfig);
 document.getElementById('btn-atualizar').addEventListener('click', carregarDados);
-['filtro-status', 'filtro-tribunal'].forEach((id) =>
+['filtro-status', 'filtro-tribunal', 'agrupar-por'].forEach((id) =>
   document.getElementById(id).addEventListener('change', renderLista));
 ['filtro-responsavel', 'filtro-busca'].forEach((id) =>
   document.getElementById(id).addEventListener('input', renderLista));
+
+function trocarVisualizacao(nova) {
+  estado.visualizacao = nova;
+  document.getElementById('btn-view-cards').classList.toggle('view-ativa', nova === 'cards');
+  document.getElementById('btn-view-calendario').classList.toggle('view-ativa', nova === 'calendario');
+  renderLista();
+}
+document.getElementById('btn-view-cards').addEventListener('click', () => trocarVisualizacao('cards'));
+document.getElementById('btn-view-calendario').addEventListener('click', () => trocarVisualizacao('calendario'));
+document.getElementById('btn-busca-rapida').addEventListener('click', abrirPalette);
+document.getElementById('btn-exportar-ics').addEventListener('click', exportarIcsFiltrados);
+document.getElementById('btn-imprimir-semana').addEventListener('click', imprimirSemana);
+document.getElementById('palette-input').addEventListener('input', (e) => renderPaletteResultados(e.target.value));
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js').catch(() => {});
+  });
+}
 
 carregarDados();
