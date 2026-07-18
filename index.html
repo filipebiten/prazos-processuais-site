@@ -120,6 +120,23 @@
   .stat-tile .valor { font-size: 1.4rem; font-variant-numeric: tabular-nums; font-weight: 600; }
   @media (min-width: 700px) { .stat-tile .valor { font-size: 1.6rem; } }
   .stat-tile .rotulo { color: var(--text-secondary); font-size: 0.72rem; margin-top: 2px; }
+  .stat-tile.stat-destaque { border-color: var(--status-critical); }
+  .stat-tile.stat-destaque .valor { color: var(--status-critical); }
+
+  /* --- Skeleton loading --- */
+  .sk-linha {
+    height: 12px;
+    border-radius: 4px;
+    margin-top: 8px;
+    background: linear-gradient(90deg, var(--gridline) 25%, var(--page-plane) 50%, var(--gridline) 75%);
+    background-size: 200% 100%;
+    animation: sk-pulse 1.4s ease-in-out infinite;
+  }
+  .sk-linha:first-child { margin-top: 0; }
+  .sk-w30 { width: 30%; } .sk-w50 { width: 50%; } .sk-w60 { width: 60%; }
+  .sk-w70 { width: 70%; } .sk-w90 { width: 90%; }
+  @keyframes sk-pulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .sk-linha { animation: none; } }
 
   .filtros {
     display: flex;
@@ -277,7 +294,11 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    animation: card-entra 0.2s ease-out;
   }
+  @keyframes card-entra { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+  .card.skeleton { animation: none; }
   .card-topo { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .card-vencimento { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 0.95rem; }
   .card-titulo { margin: 0; font-size: 1.02rem; font-weight: 700; text-transform: capitalize; }

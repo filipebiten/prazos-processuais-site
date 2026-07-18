@@ -370,6 +370,22 @@ function exportarIcsFiltrados() {
 
 // --- Render ---
 
+function renderSkeleton() {
+  const cardFalso = `
+    <div class="card skeleton">
+      <div class="sk-linha sk-w30" style="height:20px"></div>
+      <div class="sk-linha sk-w60" style="height:18px; margin-top:4px"></div>
+      <div class="sk-linha sk-w90"></div>
+      <div class="sk-linha sk-w70"></div>
+      <div class="sk-linha sk-w50"></div>
+    </div>
+  `;
+  document.getElementById('lista-container').innerHTML = `<div class="cards-grid">${cardFalso.repeat(4)}</div>`;
+  document.getElementById('stats').innerHTML = ['', '', ''].map(() => `
+    <div class="stat-tile"><div class="sk-linha sk-w30" style="height:26px"></div><div class="sk-linha sk-w60" style="margin-top:6px"></div></div>
+  `).join('');
+}
+
 function popularFiltroTribunal() {
   const select = document.getElementById('filtro-tribunal');
   const atual = select.value;
@@ -432,24 +448,25 @@ function renderSecaoRevisao() {
   `;
 }
 
+// Hero enxuto: só os 3 números que respondem "o que preciso olhar agora" — hoje, esta
+// semana, e vencidos ainda não confirmados por um humano (os mais arriscados de ignorar).
 function renderStats() {
   const pendentes = estado.prazos.filter((p) => p.status === 'pendente' && p.data_vencimento);
-  const vencidos = pendentes.filter((p) => diasAteHoje(p.data_vencimento) < 0);
-  // Mesmo critério do badge de urgência: dias úteis, não corridos.
-  const vencendoEmBreve = pendentes.filter((p) => {
-    if (diasAteHoje(p.data_vencimento) < 0) return false;
-    const d = diasUteisRestantes(p.data_vencimento);
-    return d !== null && d <= 5;
-  });
+  const hoje = hojeStr();
+  const fimSemana = addDays(hoje, 7);
+
+  const vencemHoje = pendentes.filter((p) => p.data_vencimento === hoje);
+  const vencemSemana = pendentes.filter((p) => p.data_vencimento > hoje && p.data_vencimento <= fimSemana);
+  const vencidosNaoConfirmados = pendentes.filter((p) => p.data_vencimento < hoje && p.revisado_por_humano !== true);
 
   const tiles = [
-    { valor: pendentes.length, rotulo: 'Prazos pendentes' },
-    { valor: vencendoEmBreve.length, rotulo: 'Vencendo em até 5 dias úteis' },
-    { valor: vencidos.length, rotulo: 'Vencidos' },
+    { valor: vencemHoje.length, rotulo: 'Vencem hoje', destaque: vencemHoje.length > 0 },
+    { valor: vencemSemana.length, rotulo: 'Vencem esta semana' },
+    { valor: vencidosNaoConfirmados.length, rotulo: 'Vencidos não confirmados', destaque: vencidosNaoConfirmados.length > 0 },
   ];
 
   document.getElementById('stats').innerHTML = tiles.map((t) => `
-    <div class="stat-tile">
+    <div class="stat-tile ${t.destaque ? 'stat-destaque' : ''}">
       <div class="valor">${t.valor}</div>
       <div class="rotulo">${t.rotulo}</div>
     </div>
@@ -855,6 +872,7 @@ async function carregarDados() {
 
   mostrarErro(null);
   document.getElementById('fonte-info').textContent = 'Carregando…';
+  renderSkeleton();
 
   try {
     const [prazos, publicacoes, processos] = await Promise.all([
