@@ -118,6 +118,9 @@ function diasAteHoje(dataStr) {
   return Math.round((alvo - hojeUtc) / 86_400_000);
 }
 
+// Urgência é medida em dias ÚTEIS, não corridos — é o que conta num prazo processual
+// (mesmo critério do item "dias úteis restantes" da Fase 1). diasAteHoje só entra pra
+// saber se a data-calendário já passou ("vencido"), o que é binário e não tem "dia útil".
 function badgeUrgencia(prazo) {
   if (prazo.status === 'cumprido') return { classe: 'badge-good', texto: '✓ Cumprido' };
   if (prazo.status === 'prorrogado') return { classe: 'badge-neutro', texto: '↻ Prorrogado' };
@@ -125,11 +128,13 @@ function badgeUrgencia(prazo) {
 
   if (!prazo.data_vencimento) return { classe: 'badge-neutro', texto: '— Aguardando cálculo' };
 
-  const dias = diasAteHoje(prazo.data_vencimento);
-  if (dias < 0) return { classe: 'badge-critical', texto: `⛔ Vencido há ${Math.abs(dias)}d` };
-  if (dias <= 2) return { classe: 'badge-critical', texto: `⚠ Vence em ${dias}d` };
-  if (dias <= 5) return { classe: 'badge-warning', texto: `⏳ Vence em ${dias}d` };
-  return { classe: 'badge-good', texto: `✓ Vence em ${dias}d` };
+  const diasCorridos = diasAteHoje(prazo.data_vencimento);
+  if (diasCorridos < 0) return { classe: 'badge-critical', texto: `⛔ Vencido há ${Math.abs(diasCorridos)}d` };
+
+  const dias = diasUteisRestantes(prazo.data_vencimento) ?? 0;
+  if (dias <= 2) return { classe: 'badge-critical', texto: `⚠ Vence em ${dias} dia(s) útil(eis)` };
+  if (dias <= 5) return { classe: 'badge-warning', texto: `⏳ Vence em ${dias} dia(s) útil(eis)` };
+  return { classe: 'badge-good', texto: `✓ Vence em ${dias} dia(s) útil(eis)` };
 }
 
 function formatarData(dataStr) {
@@ -358,15 +363,17 @@ function renderSecaoRevisao() {
 
 function renderStats() {
   const pendentes = estado.prazos.filter((p) => p.status === 'pendente' && p.data_vencimento);
-  const vencendoEmBreve = pendentes.filter((p) => {
-    const d = diasAteHoje(p.data_vencimento);
-    return d >= 0 && d <= 5;
-  });
   const vencidos = pendentes.filter((p) => diasAteHoje(p.data_vencimento) < 0);
+  // Mesmo critério do badge de urgência: dias úteis, não corridos.
+  const vencendoEmBreve = pendentes.filter((p) => {
+    if (diasAteHoje(p.data_vencimento) < 0) return false;
+    const d = diasUteisRestantes(p.data_vencimento);
+    return d !== null && d <= 5;
+  });
 
   const tiles = [
     { valor: pendentes.length, rotulo: 'Prazos pendentes' },
-    { valor: vencendoEmBreve.length, rotulo: 'Vencendo em até 5 dias' },
+    { valor: vencendoEmBreve.length, rotulo: 'Vencendo em até 5 dias úteis' },
     { valor: vencidos.length, rotulo: 'Vencidos' },
   ];
 
@@ -403,7 +410,6 @@ function renderCard(prazo) {
   const expandido = estado.teorExpandido.has(prazo.id);
   const teor = pub.teor_resumido || '';
   const teorCurto = teor.length > 220 && !expandido ? teor.slice(0, 220) + '…' : teor;
-  const diasUteis = prazo.status === 'pendente' ? diasUteisRestantes(prazo.data_vencimento) : null;
   const trilhaAberta = estado.trilhaExpandida.has(prazo.id);
 
   const partesHtml = (proc.partes || []).slice(0, 6).map((p) => `
@@ -414,10 +420,7 @@ function renderCard(prazo) {
     <article class="card" data-id="${prazo.id}">
       <div class="card-topo">
         <span class="badge ${badge.classe}">${badge.texto}</span>
-        <span class="card-vencimento">
-          ${formatarData(prazo.data_vencimento)}
-          ${diasUteis !== null ? `<span class="dias-uteis-restantes">· ${diasUteis} dia(s) útil(eis)</span>` : ''}
-        </span>
+        <span class="card-vencimento">${formatarData(prazo.data_vencimento)}</span>
       </div>
 
       <h3 class="card-titulo">${escapeHtml(prazo.tipo_prazo || 'Prazo')}</h3>
